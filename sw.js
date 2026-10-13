@@ -2,7 +2,7 @@
 // กลยุทธ์: precache หน้าแอปเอง, ส่วนไฟล์จาก CDN (pdf-lib, pdf.js, ฟอนต์) จะถูกเก็บลงแคช
 // อัตโนมัติหลังโหลดสำเร็จครั้งแรก แล้วใช้จากแคชได้ทันทีในครั้งถัดไปแม้ไม่มีเน็ต
 
-const CACHE_VERSION = 'pdf-tools-v1';
+const CACHE_VERSION = 'pdf-tools-v2';
 const APP_SHELL = [
   './',
   './index.html',

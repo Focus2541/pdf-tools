@@ -350,6 +350,7 @@ const ICONS = {
   pagenum: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="3" width="14" height="18" rx="1.4"/><path d="M9 15.5h2M13 15.5h2M9.5 17.7h1.2M13.5 17.7h1" stroke-linecap="round"/></svg>`,
   watermark: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="3" width="16" height="18" rx="1.4"/><path d="M8 17l3.2-9L14 14l1.6-3.6L18 14" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/></svg>`,
   crop: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2"/></svg>`,
+  pdf2word: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h7l4 4v14a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/><path d="M8.5 12.5l1.2 5 1.3-4 1.3 4 1.2-5"/></svg>`,
   lock: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="10" width="14" height="10" rx="1.6"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`,
   sign: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17.5c1.2-3 2.6-4.5 3.6-4.5 1.4 0 1.4 3.4 2.8 3.4 1.6 0 2.6-6.7 4.2-6.7 1.3 0 1.1 4.8 2.4 4.8 1 0 2-2.2 3-2.2"/><path d="M3 21h18"/></svg>`,
   stamp: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 15.5V12a4 4 0 1 1 8 0v3.5"/><path d="M6 15.5h12l1 3.5H5l1-3.5z"/><path d="M4 21.5h16"/></svg>`,
@@ -1103,6 +1104,230 @@ registerTool({
           box.appendChild(dl);
           resultWrap.appendChild(box);
         });
+      }catch(err){
+        console.error(err);
+        resultWrap.innerHTML = '';
+        resultWrap.appendChild(el('div', {class:'note warn'}, ['แปลงไฟล์ไม่สำเร็จ: ' + err.message]));
+      }
+    }
+  }
+});
+
+/* ===================== DOCX builder (no library) ===================== */
+const DocxLib = (() => {
+  const enc = new TextEncoder();
+  let crcTable = null;
+  function crc32(u8){
+    if(!crcTable){ crcTable = new Uint32Array(256); for(let n=0;n<256;n++){ let c=n; for(let k=0;k<8;k++) c = c&1 ? 0xEDB88320^(c>>>1) : c>>>1; crcTable[n]=c>>>0; } }
+    let c = 0xFFFFFFFF;
+    for(let i=0;i<u8.length;i++) c = crcTable[(c^u8[i])&255] ^ (c>>>8);
+    return (c^0xFFFFFFFF)>>>0;
+  }
+  function zip(files){ // files: [{name, data:Uint8Array}] stored (no compression)
+    const parts = [], central = []; let offset = 0;
+    const now = new Date();
+    const dosTime = (now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1);
+    const dosDate = ((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+    for(const f of files){
+      const name = enc.encode(f.name), crc = crc32(f.data), size = f.data.length;
+      const lh = new DataView(new ArrayBuffer(30));
+      lh.setUint32(0,0x04034b50,true); lh.setUint16(4,20,true); lh.setUint16(6,0x0800,true);
+      lh.setUint16(8,0,true); lh.setUint16(10,dosTime,true); lh.setUint16(12,dosDate,true);
+      lh.setUint32(14,crc,true); lh.setUint32(18,size,true); lh.setUint32(22,size,true);
+      lh.setUint16(26,name.length,true); lh.setUint16(28,0,true);
+      parts.push(new Uint8Array(lh.buffer), name, f.data);
+      const ch = new DataView(new ArrayBuffer(46));
+      ch.setUint32(0,0x02014b50,true); ch.setUint16(4,20,true); ch.setUint16(6,20,true); ch.setUint16(8,0x0800,true);
+      ch.setUint16(10,0,true); ch.setUint16(12,dosTime,true); ch.setUint16(14,dosDate,true);
+      ch.setUint32(16,crc,true); ch.setUint32(20,size,true); ch.setUint32(24,size,true);
+      ch.setUint16(28,name.length,true); ch.setUint32(42,offset,true);
+      central.push(new Uint8Array(ch.buffer), name);
+      offset += 30 + name.length + size;
+    }
+    let cdSize = 0; central.forEach(p => cdSize += p.length);
+    const end = new DataView(new ArrayBuffer(22));
+    end.setUint32(0,0x06054b50,true); end.setUint16(8,files.length,true); end.setUint16(10,files.length,true);
+    end.setUint32(12,cdSize,true); end.setUint32(16,offset,true);
+    return new Blob([...parts, ...central, new Uint8Array(end.buffer)],
+      {type:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+  }
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g,'');
+  const NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"';
+  const FONT = 'Tahoma';
+  function runXml(text, sz, bold){
+    const rpr = `<w:rPr><w:rFonts w:ascii="${FONT}" w:hAnsi="${FONT}" w:cs="${FONT}" w:eastAsia="${FONT}"/>${bold?'<w:b/><w:bCs/>':''}<w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/></w:rPr>`;
+    const segs = text.split('\t'); let out = '';
+    segs.forEach((s,i) => { if(i>0) out += `<w:r>${rpr}<w:tab/></w:r>`; if(s) out += `<w:r>${rpr}<w:t xml:space="preserve">${esc(s)}</w:t></w:r>`; });
+    return out;
+  }
+  // blocks: {type:'p', text, sz, bold, pageBreakBefore, after} | {type:'img', rid, wEmu, hEmu, id, pageBreakBefore}
+  // opts: pageW, pageH (twips), margin (twips)
+  function build(blocks, images, opts){
+    const m = opts.margin;
+    let body = '';
+    for(const b of blocks){
+      if(b.type==='p'){
+        body += `<w:p><w:pPr>${b.pageBreakBefore?'<w:pageBreakBefore/>':''}<w:spacing w:before="0" w:after="${b.after??120}" w:line="${b.line??276}" w:lineRule="auto"/>${b.ind>8?`<w:ind w:left="${Math.min(6000,Math.round(b.ind*20))}"/>`:''}</w:pPr>${runXml(b.text,b.sz||28,b.bold)}</w:p>`;
+      } else if(b.type==='img'){
+        body += `<w:p><w:pPr>${b.pageBreakBefore?'<w:pageBreakBefore/>':''}<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/><w:rPr><w:sz w:val="2"/></w:rPr></w:pPr><w:r><w:rPr><w:sz w:val="2"/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${b.wEmu}" cy="${b.hEmu}"/><wp:docPr id="${b.id}" name="Page ${b.id}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="${b.id}" name="page${b.id}.jpg"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${b.rid}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${b.wEmu}" cy="${b.hEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>`;
+      }
+    }
+    const sect = `<w:sectPr><w:pgSz w:w="${opts.pageW}" w:h="${opts.pageH}"/><w:pgMar w:top="${m}" w:right="${m}" w:bottom="${m}" w:left="${m}" w:header="0" w:footer="0" w:gutter="0"/></w:sectPr>`;
+    const docXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document ${NS}><w:body>${body}${sect}</w:body></w:document>`;
+    const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="${FONT}" w:hAnsi="${FONT}" w:cs="${FONT}" w:eastAsia="${FONT}"/><w:sz w:val="28"/><w:szCs w:val="28"/><w:lang w:val="en-US" w:bidi="th-TH"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style></w:styles>`;
+    let rels = `<Relationship Id="rIdSt" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`;
+    const files = [];
+    images.forEach(im => { rels += `<Relationship Id="${im.rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/${im.name}"/>`; files.push({name:'word/media/'+im.name, data:im.data}); });
+    const enc2 = s => enc.encode(s);
+    return zip([
+      {name:'[Content_Types].xml', data:enc2(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Default Extension="jpg" ContentType="image/jpeg"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>`)},
+      {name:'_rels/.rels', data:enc2(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`)},
+      {name:'word/document.xml', data:enc2(docXml)},
+      {name:'word/styles.xml', data:enc2(styles)},
+      {name:'word/_rels/document.xml.rels', data:enc2(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${rels}</Relationships>`)},
+      ...files,
+    ]);
+  }
+  return {build};
+})();
+
+/* Group pdf.js text items of one page into paragraphs */
+function pdfTextToParagraphs(items, pageH){
+  const isThai = ch => /[฀-๿]/.test(ch);
+  const lines = []; let cur = null;
+  for(const it of items){
+    if(!it.str && !it.hasEOL) continue;
+    const x = it.transform[4], y = it.transform[5];
+    const h = Math.abs(it.transform[3]) || it.height || 10;
+    if(!it.str.trim() && !cur) continue;
+    if(!cur || Math.abs(y - cur.y) > Math.max(h,cur.h)*0.45){
+      cur = {y, h, x0:x, endX:x, text:'', hs:[]};
+      lines.push(cur);
+    }
+    if(it.str){
+      const gap = x - cur.endX;
+      if(cur.text){
+        const last = cur.text.slice(-1), first = it.str[0];
+        if(gap > h*1.8) cur.text += '\t';
+        else if(gap > h*0.18 && !isThai(last) && !isThai(first) && !/\s$/.test(cur.text) && !/^\s/.test(it.str)) cur.text += ' ';
+      }
+      cur.text += it.str; cur.hs.push(h*it.str.length);
+      cur.endX = Math.max(cur.endX, x + (it.width||0));
+      cur.h = h;
+    }
+  }
+  const ls = lines.filter(l => l.text.trim());
+  if(!ls.length) return [];
+  const maxEnd = Math.max(...ls.map(l=>l.endX)), minX = Math.min(...ls.map(l=>l.x0));
+  const paras = [];
+  let p = null, prev = null;
+  for(const l of ls){
+    const sz = Math.max(16, Math.min(96, Math.round(l.h*2*0.98)));
+    const gap = prev ? (prev.y - l.y) : 0;
+    const wrapped = prev && gap > 0 && gap < l.h*1.7 && prev.endX > minX + (maxEnd-minX)*0.82 && !prev.text.includes('\t') && Math.abs(prev.h - l.h) < 1.5 && Math.abs(l.x0 - prev.x0) < l.h*3;
+    if(wrapped && p){
+      const j = (isThai(p.text.slice(-1)) || isThai(l.text[0])) ? '' : ' ';
+      p.text += j + l.text.trim();
+    } else {
+      const indent = Math.max(0, Math.round(l.x0 - minX));
+      p = {type:'p', text: l.text.replace(/\s+$/,''), sz, after: prev && gap > l.h*2.2 ? 240 : 80, ind: indent};
+      paras.push(p);
+    }
+    prev = l;
+  }
+  return paras;
+}
+
+/* ===================== PDF → Word ===================== */
+registerTool({
+  id:'pdf2word', cat:'convert', icon:'pdf2word',
+  name:'PDF → Word', desc:'แปลง PDF เป็นไฟล์ Word (.docx)',
+  longDesc:'แปลงไฟล์ PDF เป็นเอกสาร Word ทำงานในเครื่องคุณทั้งหมด ไม่อัปโหลดไฟล์ไปไหน โหมด "ข้อความ" ดึงตัวหนังสือมาให้แก้ไขได้ (ใช้กับ PDF ที่พิมพ์/สร้างจากคอมพิวเตอร์) ส่วนโหมด "รูปหน้า" ใส่แต่ละหน้าเป็นรูปภาพเหมือนต้นฉบับ (ใช้กับ PDF ที่สแกนมา)',
+  render(container){
+    let mode = 'text', srcFile = null, buf = null;
+    const dz = buildDropzone({
+      accept:'application/pdf', multiple:false,
+      label:'เลือกไฟล์ PDF ที่ต้องการแปลงเป็น Word', sub:'เลือกไฟล์ PDF',
+      onFiles: async (files) => {
+        const f = files[0]; if(!f) return;
+        srcFile = f; buf = await readAsArrayBuffer(f); drawUI();
+      }
+    });
+    container.appendChild(el('div', {class:'card'}, [dz]));
+    const formWrap = el('div'); container.appendChild(formWrap);
+    const resultWrap = el('div'); container.appendChild(resultWrap);
+
+    function drawUI(){
+      formWrap.innerHTML = ''; resultWrap.innerHTML = '';
+      const card = el('div', {class:'card'});
+      card.appendChild(el('div', {class:'note'}, [`ไฟล์: ${srcFile.name} (${fmtBytes(srcFile.size)})`]));
+      const sel = el('select', {}, [
+        el('option', {value:'text'}, ['ข้อความ — แก้ไขได้ (PDF ที่ไม่ใช่ไฟล์สแกน)']),
+        el('option', {value:'image'}, ['รูปหน้า — เหมือนต้นฉบับ (ไฟล์สแกน)']),
+      ]);
+      sel.value = mode;
+      sel.addEventListener('change', () => { mode = sel.value; });
+      card.appendChild(el('div', {class:'field'}, [el('label', {}, ['โหมดการแปลง']), sel]));
+      card.appendChild(el('div', {class:'note'}, ['หมายเหตุ: ไฟล์สแกนไม่มีตัวหนังสือจริง จึงแปลงเป็นข้อความที่แก้ไขได้ไม่ได้ (ไม่มี OCR) ให้ใช้โหมดรูปหน้าแทน ตารางและการจัดหน้าซับซ้อนอาจไม่เหมือนต้นฉบับ 100%']));
+      const go = el('button', {class:'btn block'}, ['แปลงเป็น Word']);
+      go.addEventListener('click', doConvert);
+      card.appendChild(go);
+      formWrap.appendChild(card);
+    }
+    async function doConvert(){
+      resultWrap.innerHTML = '';
+      const status = el('div', {class:'note'}, [el('span',{class:'spinner'}), 'กำลังแปลงไฟล์...']);
+      resultWrap.appendChild(status);
+      try{
+        const doc = await pdfjsFromBytes(new Uint8Array(buf));
+        const n = doc.numPages;
+        const p1 = await doc.getPage(1); const v1 = p1.getViewport({scale:1});
+        const blocks = [], images = [];
+        let opts, textChars = 0;
+        if(mode==='text'){
+          opts = {pageW: Math.round(v1.width*20), pageH: Math.round(v1.height*20), margin: 1134};
+          for(let i=1;i<=n;i++){
+            status.lastChild.textContent = `กำลังอ่านหน้า ${i}/${n}...`;
+            const page = await doc.getPage(i);
+            const tc = await page.getTextContent();
+            const paras = pdfTextToParagraphs(tc.items, page.getViewport({scale:1}).height);
+            paras.forEach((p,k) => { if(i>1 && k===0) p.pageBreakBefore = true; textChars += p.text.length; blocks.push(p); });
+            if(paras.length===0 && i>1) blocks.push({type:'p', text:'', pageBreakBefore:true, sz:20});
+          }
+          if(textChars < 5){
+            resultWrap.innerHTML = '';
+            resultWrap.appendChild(el('div', {class:'note warn'}, ['ไม่พบตัวหนังสือในไฟล์นี้ — น่าจะเป็นไฟล์สแกน กรุณาเลือกโหมด "รูปหน้า" แล้วลองใหม่']));
+            return;
+          }
+        } else {
+          opts = {pageW: Math.round(v1.width*20), pageH: Math.round(v1.height*20), margin: 0};
+          for(let i=1;i<=n;i++){
+            status.lastChild.textContent = `กำลังสร้างรูปหน้า ${i}/${n}...`;
+            const canvas = await renderPageToCanvas(doc, i, 1400);
+            const url = canvas.toDataURL('image/jpeg', 0.85);
+            const data = await fetchPngBytesFromDataUrl(url);
+            const page = await doc.getPage(i); const v = page.getViewport({scale:1});
+            const rid = 'rIdImg'+i;
+            images.push({rid, name:`page${i}.jpg`, data});
+            // fit within the page, slightly smaller so no blank trailing page
+            const k = Math.min((v1.width*0.995)/v.width, (v1.height*0.985)/v.height);
+            blocks.push({type:'img', rid, id:i, wEmu:Math.round(v.width*k*12700), hEmu:Math.round(v.height*k*12700), pageBreakBefore: i>1});
+          }
+        }
+        status.lastChild.textContent = 'กำลังสร้างไฟล์ Word...';
+        const blob = DocxLib.build(blocks, images, opts);
+        const outName = srcFile.name.replace(/\.pdf$/i,'') + '.docx';
+        resultWrap.innerHTML = '';
+        const box = el('div', {class:'result-box'}, [
+          el('div', {class:'rtext'}, [
+            el('div', {class:'rtitle'}, [outName]),
+            el('div', {class:'rsub'}, [`${n} หน้า • ${fmtBytes(blob.size)}` + (mode==='text' ? ` • ${textChars.toLocaleString()} ตัวอักษร` : ' • แบบรูปหน้า')]),
+          ]),
+        ]);
+        const dl = el('button', {class:'btn'}, ['ดาวน์โหลด .docx']);
+        dl.addEventListener('click', () => downloadBlob(blob, outName));
+        box.appendChild(dl);
+        resultWrap.appendChild(box);
       }catch(err){
         console.error(err);
         resultWrap.innerHTML = '';
